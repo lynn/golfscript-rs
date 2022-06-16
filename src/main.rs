@@ -15,20 +15,26 @@ use num::Signed;
 use num::ToPrimitive;
 use num::Zero;
 use std::cmp::Ordering;
+use std::io::Read;
 use std::io::Write;
 
 use std::collections::HashMap;
-use std::str;
 
 mod coerce;
 mod parse;
+mod unescape;
 mod util;
 mod value;
 
 use crate::coerce::{coerce, Coerced};
 use crate::parse::Gtoken;
+use crate::unescape::unescape;
 use crate::util::{repeat, set_and, set_or, set_subtract, set_xor};
 use crate::value::Gval;
+
+fn print(bytes: &[u8]) {
+    std::io::stdout().write_all(bytes).unwrap();
+}
 
 struct Gs {
     pub stack: Vec<Gval>,
@@ -39,11 +45,9 @@ struct Gs {
 
 impl Gs {
     pub fn new() -> Gs {
-        let mut vars = HashMap::new();
-        vars.insert(b"n".to_vec(), Gval::Str(b"\n".to_vec()));
         Gs {
             stack: vec![],
-            vars,
+            vars: HashMap::new(),
             lb: vec![],
             rng_state: 123456789u64,
         }
@@ -64,7 +68,7 @@ impl Gs {
                     self.vars.insert(name.lexeme().to_owned(), t);
                 }
                 t => {
-                    self.run_builtin(t);
+                    self.run_token(t);
                 }
             }
         }
@@ -106,12 +110,12 @@ impl Gs {
 
     fn backtick(&mut self) {
         let bs = self.pop().inspect();
-        self.push(Gval::Str(bs))
+        self.push(Gval::Str(bs));
     }
 
     fn bang(&mut self) {
         let f = self.pop().falsey();
-        self.push(Gval::Int(if f { BigInt::one() } else { BigInt::zero() }));
+        self.push(Gval::bool(f));
     }
 
     fn at_sign(&mut self) {
@@ -202,11 +206,9 @@ impl Gs {
             (Int(a), Int(b)) => self.push(Int(a * b)),
             // join
             (Arr(a), Arr(sep)) => self.push(join(a, Arr(sep))),
+            (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => self.push(join(a, Str(sep))),
             (Str(a), Str(sep)) => {
                 let a: Vec<Gval> = a.into_iter().map(|x| Gval::Str(vec![x.into()])).collect();
-                self.push(join(a, Str(sep)));
-            }
-            (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => {
                 self.push(join(a, Str(sep)));
             }
 
@@ -222,7 +224,7 @@ impl Gs {
             (Int(mut n), Blk(f)) | (Blk(f), Int(mut n)) => {
                 while n.is_positive() {
                     self.run(&f);
-                    n -= BigInt::one();
+                    n -= 1;
                 }
             }
         }
@@ -598,7 +600,7 @@ impl Gs {
         for v in vs {
             self.push(v.clone().into());
             self.run(&code);
-            if !self.pop().falsey() {
+            if self.pop().truthy() {
                 r.push(v)
             }
         }
@@ -609,7 +611,7 @@ impl Gs {
         for v in vs {
             self.push(v.clone().into());
             self.run(&code);
-            if !self.pop().falsey() {
+            if self.pop().truthy() {
                 self.push(v.into());
                 break;
             }
@@ -623,7 +625,7 @@ impl Gs {
         }
     }
 
-    fn run_builtin(&mut self, token: Gtoken) {
+    fn run_token(&mut self, token: Gtoken) {
         if let Some(v) = self.vars.get(token.lexeme()).cloned() {
             self.go(v);
             return;
@@ -633,34 +635,8 @@ impl Gs {
                 let n = BigInt::parse_bytes(bs, 10).unwrap();
                 self.push(Gval::Int(n));
             }
-            Gtoken::SingleQuotedString(bs) | Gtoken::DoubleQuotedString(bs) => {
-                let mut bytes = vec![];
-                let mut escaping = false;
-                let single = matches!(token, Gtoken::SingleQuotedString(_));
-                for i in 1..bs.len() - 1 {
-                    if escaping {
-                        if single {
-                            if bs[i] != b'\\' && bs[i] != b'\'' {
-                                bytes.push(b'\\');
-                            }
-                            bytes.push(bs[i]);
-                        } else {
-                            bytes.push(match bs[i] {
-                                b'r' => b'\r',
-                                b'n' => b'\n',
-                                b't' => b'\t',
-                                b => b,
-                            });
-                        }
-                        escaping = false;
-                    } else if bs[i] == b'\\' {
-                        escaping = true;
-                    } else {
-                        bytes.push(bs[i]);
-                    }
-                }
-                self.push(Gval::Str(bytes))
-            }
+            Gtoken::SingleQuotedString(bs) => self.push(Gval::Str(unescape(bs, true))),
+            Gtoken::DoubleQuotedString(bs) => self.push(Gval::Str(unescape(bs, false))),
             Gtoken::Symbol(b"~") => self.tilde(),
             Gtoken::Symbol(b"`") => self.backtick(),
             Gtoken::Symbol(b"!") => self.bang(),
@@ -699,7 +675,7 @@ impl Gs {
             Gtoken::Symbol(b"and") => {
                 let b = self.pop();
                 let a = self.pop();
-                self.go(if !a.falsey() { b } else { a });
+                self.go(if a.truthy() { b } else { a });
             }
             Gtoken::Symbol(b"or") => {
                 let b = self.pop();
@@ -709,21 +685,22 @@ impl Gs {
             Gtoken::Symbol(b"xor") => {
                 let b = self.pop();
                 let a = self.pop();
-                self.push(Gval::bool(a.falsey() ^ b.falsey()));
+                self.push(Gval::bool(a.truthy() ^ b.truthy()));
             }
+            Gtoken::Symbol(b"n") => self.push(Gval::Str(b"\n".to_vec())),
             Gtoken::Symbol(b"print") => {
                 let a = self.pop();
-                std::io::stdout().write(&a.to_gs()).unwrap();
+                print(&a.to_gs());
             }
             Gtoken::Symbol(b"p") => {
                 let a = self.pop();
-                std::io::stdout().write(&a.inspect()).unwrap();
-                std::io::stdout().write(b"\n").unwrap();
+                print(&a.inspect());
+                print(b"\n");
             }
             Gtoken::Symbol(b"puts") => {
                 let a = self.pop();
-                std::io::stdout().write(&a.to_gs()).unwrap();
-                std::io::stdout().write(b"\n").unwrap();
+                print(&a.to_gs());
+                print(b"\n");
             }
             Gtoken::Symbol(b"rand") => self.rand(),
             Gtoken::Symbol(b"do") => self.do_loop(),
@@ -733,7 +710,7 @@ impl Gs {
                 let c = self.pop();
                 let b = self.pop();
                 let a = self.pop();
-                if !a.falsey() {
+                if a.truthy() {
                     self.go(b);
                 } else {
                     self.go(c);
@@ -754,17 +731,65 @@ impl Gs {
 
 #[derive(clap::Parser, Debug)]
 struct Cli {
-    code: String,
-    input: String,
+    #[clap(long)]
+    code_path: Option<String>,
+    #[clap(short = 'e', long, allow_hyphen_values = true)]
+    code: Option<String>,
+    #[clap(long)]
+    input_path: Option<String>,
+    #[clap(short = 'i', long, allow_hyphen_values = true)]
+    input: Option<String>,
+    #[clap(short = 'q', long, takes_value = false)]
+    no_implicit_output: bool,
+    #[clap(short = 's', long, takes_value = false)]
+    input_from_stdin: bool,
+    #[clap(long, takes_value = false)]
+    args: bool,
+    args_vec: Vec<String>,
 }
 
 fn main() {
-    let p = Cli::parse();
+    let cli = Cli::parse();
     let mut gs = Gs::new();
-    gs.stack.push(Gval::Str(p.input.as_bytes().to_vec()));
-    gs.run(p.code.as_bytes());
-    // for g in gs.stack {
-    //     print!("{} ", str::from_utf8(&g.inspect()).unwrap());
-    // }
-    println!("{}", str::from_utf8(&Gval::Arr(gs.stack).to_gs()).unwrap());
+    let input = if cli.args {
+        Gval::Arr(
+            cli.args_vec
+                .iter()
+                .map(|x| Gval::Str(x.as_bytes().to_vec()))
+                .collect(),
+        )
+    } else if cli.input_from_stdin {
+        let mut bytes = vec![];
+        std::io::stdin().read_to_end(&mut bytes).unwrap();
+        Gval::Str(bytes)
+    } else if let Some(path) = cli.input_path {
+        Gval::Str(std::fs::read(path).unwrap())
+    } else if let Some(string) = cli.input {
+        Gval::Str(string.as_bytes().to_vec())
+    } else {
+        Gval::Str(vec![])
+    };
+    let code = if let Some(path) = cli.code_path {
+        std::fs::read(path).unwrap()
+    } else if let Some(code) = cli.code {
+        code.as_bytes().to_vec()
+    } else {
+        eprintln!(
+            r"No code provided. Try:
+
+    golfscript-rs --help
+    golfscript-rs --code '~{{.@\%.}}do;'   --input '140 150'
+    golfscript-rs --code 'n*~{{.@\%.}}do;' --args 140 150   # code.golf style
+    golfscript-rs --code-path file.gs    --input-file input.txt
+    golfscript-rs --code-path file.gs    --input-from-stdin
+"
+        );
+        std::process::exit(1)
+    };
+    gs.stack.push(input);
+    gs.run(&code);
+    if !cli.no_implicit_output {
+        gs.stack = vec![Gval::Arr(gs.stack)];
+        gs.run(b"puts");
+    }
 }

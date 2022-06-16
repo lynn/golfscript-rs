@@ -1,7 +1,6 @@
+use crate::util::to_byte;
 use crate::value::Gval;
 use num::BigInt;
-use num::Integer;
-use num::ToPrimitive;
 
 #[derive(Debug)]
 pub enum Coerced {
@@ -24,7 +23,7 @@ impl Coerced {
 
 pub fn flatten_append(bytes: &mut Vec<u8>, val: Gval) {
     match val {
-        Gval::Int(a) => bytes.push(a.mod_floor(&256.into()).to_u8().unwrap()),
+        Gval::Int(a) => bytes.push(to_byte(a)),
         Gval::Arr(vs) => {
             for v in vs {
                 flatten_append(bytes, v);

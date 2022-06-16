@@ -1,11 +1,16 @@
 use core::cmp::Ordering;
 use core::hash::Hash;
 use num::BigInt;
+use num::Integer;
 use num::One;
 use num::Signed;
 use num::ToPrimitive;
 use num::Zero;
 use std::collections::HashSet;
+
+pub fn to_byte(n: BigInt) -> u8 {
+    n.mod_floor(&256.into()).to_u8().unwrap()
+}
 
 pub fn repeat<T: Clone>(a: Vec<T>, mut n: BigInt) -> Vec<T> {
     let mut v = vec![];

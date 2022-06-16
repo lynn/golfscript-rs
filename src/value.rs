@@ -36,6 +36,10 @@ impl Gval {
         }
     }
 
+    pub fn truthy(&self) -> bool {
+        !self.falsey()
+    }
+
     pub fn to_gs(self) -> Vec<u8> {
         match self {
             Gval::Int(a) => a.to_str_radix(10).into_bytes(),
