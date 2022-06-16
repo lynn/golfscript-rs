@@ -22,6 +22,9 @@ pub fn repeat<T: Clone>(a: Vec<T>, mut n: BigInt) -> Vec<T> {
 }
 
 pub fn chunk<'a, T: Clone>(a: &'a mut Vec<T>, n: BigInt) -> Vec<&'a [T]> {
+    if a.len() == 0 {
+        return vec![];
+    }
     if n.is_zero() {
         panic!("chunk division by 0");
     }
@@ -29,6 +32,29 @@ pub fn chunk<'a, T: Clone>(a: &'a mut Vec<T>, n: BigInt) -> Vec<&'a [T]> {
         a.reverse();
     }
     a.chunks(n.abs().to_usize().unwrap()).collect()
+}
+
+pub fn split<T: Clone + Eq>(a: Vec<T>, sep: Vec<T>, clean: bool) -> Vec<Vec<T>> {
+    let mut r: Vec<Vec<T>> = vec![];
+    let mut i: Vec<T> = vec![];
+    let mut j: usize = 0;
+
+    while j < a.len() {
+        if j + sep.len() <= a.len() && a[j..j + sep.len()].iter().eq(sep.iter()) {
+            if !clean || i.len() > 0 {
+                r.push(i);
+            }
+            i = vec![];
+            j += sep.len();
+        } else {
+            i.push(a[j].clone());
+            j += 1;
+        }
+    }
+    if !clean || i.len() > 0 {
+        r.push(i);
+    }
+    r
 }
 
 pub fn every_nth<T>(a: Vec<T>, n: BigInt) -> Vec<T> {
