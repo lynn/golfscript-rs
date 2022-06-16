@@ -11,7 +11,18 @@ pub enum Coerced {
     Blks(Vec<u8>, Vec<u8>),
 }
 
-fn flatten_append(bytes: &mut Vec<u8>, val: Gval) {
+impl Coerced {
+    pub fn left(self) -> Gval {
+        match self {
+            Coerced::Ints(a, _) => Gval::Int(a),
+            Coerced::Arrs(a, _) => Gval::Arr(a),
+            Coerced::Strs(a, _) => Gval::Str(a),
+            Coerced::Blks(a, _) => Gval::Blk(a),
+        }
+    }
+}
+
+pub fn flatten_append(bytes: &mut Vec<u8>, val: Gval) {
     match val {
         Gval::Int(a) => bytes.push(a.mod_floor(&256.into()).to_u8().unwrap()),
         Gval::Arr(vs) => {
@@ -23,7 +34,7 @@ fn flatten_append(bytes: &mut Vec<u8>, val: Gval) {
     }
 }
 
-fn flatten(arr: Vec<Gval>) -> Vec<u8> {
+pub fn flatten(arr: Vec<Gval>) -> Vec<u8> {
     let mut bytes: Vec<u8> = vec![];
     flatten_append(&mut bytes, Gval::Arr(arr));
     bytes

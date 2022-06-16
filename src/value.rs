@@ -1,3 +1,4 @@
+use crate::coerce::flatten_append;
 use crate::coerce::{coerce, Coerced};
 use num::BigInt;
 use num::One;
@@ -58,12 +59,15 @@ impl Gval {
     pub fn inspect(self) -> Vec<u8> {
         match self {
             Gval::Arr(vs) => {
-                let mut bytes: Vec<u8> = vec![];
+                let mut bytes: Vec<u8> = vec![b'['];
+                let mut s = false;
                 for v in vs {
-                    bytes.push(b' ');
+                    if s {
+                        bytes.push(b' ');
+                    }
+                    s = true;
                     bytes.extend(v.inspect());
                 }
-                bytes[0] = b'[';
                 bytes.push(b']');
                 bytes
             }
@@ -102,6 +106,46 @@ impl Gval {
             }
         }
     }
+
+    pub fn factory(&self) -> Gval {
+        match self {
+            Gval::Int(_) => Gval::Int(BigInt::zero()),
+            Gval::Arr(_) => Gval::Arr(vec![]),
+            Gval::Str(_) => Gval::Str(vec![]),
+            Gval::Blk(_) => Gval::Blk(vec![]),
+        }
+    }
+
+    pub fn push(&mut self, other: Gval) {
+        match self {
+            Gval::Int(_) => panic!("push"),
+            Gval::Arr(vs) => vs.push(other),
+            Gval::Str(vs) => flatten_append(vs, other),
+            Gval::Blk(vs) => flatten_append(vs, other),
+        }
+    }
+
+    pub fn unwrap_int(self) -> BigInt {
+        match self {
+            Gval::Int(n) => n,
+            _ => panic!("expected int"),
+        }
+    }
+
+    pub fn unwrap_arr(self) -> Vec<Gval> {
+        match self {
+            Gval::Arr(a) => a,
+            _ => panic!("expected array"),
+        }
+    }
+
+    pub fn as_arr(self) -> Vec<Gval> {
+        match self {
+            Gval::Int(_) => panic!("as_arr"),
+            Gval::Arr(a) => a,
+            Gval::Str(a) | Gval::Blk(a) => a.into_iter().map(|b| b.into()).collect(),
+        }
+    }
 }
 
 pub fn join(a: Vec<Gval>, sep: Gval) -> Gval {
@@ -112,6 +156,7 @@ pub fn join(a: Vec<Gval>, sep: Gval) -> Gval {
             _ => Gval::Str(vec![]),
         },
         Some(mut r) => {
+            r = coerce(r, sep.clone()).left();
             for i in a {
                 r = r.plus(sep.clone()).plus(i);
             }

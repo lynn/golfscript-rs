@@ -68,6 +68,7 @@ pub fn set_and<T: Clone + Eq + Hash>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
 pub fn set_xor<T: Clone + Eq + Hash>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
     let mut in_a: HashSet<T> = HashSet::new();
     let mut in_b: HashSet<T> = HashSet::new();
+    let mut seen: HashSet<T> = HashSet::new();
     let mut result: Vec<T> = vec![];
     for v in &a {
         in_a.insert(v.clone());
@@ -76,7 +77,8 @@ pub fn set_xor<T: Clone + Eq + Hash>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
         in_b.insert(v.clone());
     }
     for v in a.into_iter().chain(b.into_iter()) {
-        if in_a.contains(&v) ^ in_b.contains(&v) {
+        if !seen.contains(&v) && (in_a.contains(&v) ^ in_b.contains(&v)) {
+            seen.insert(v.clone());
             result.push(v)
         }
     }
@@ -85,7 +87,9 @@ pub fn set_xor<T: Clone + Eq + Hash>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
 
 pub fn index<T>(a: &Vec<T>, i: BigInt) -> Option<&T> {
     let l: BigInt = a.len().into();
-    if i >= BigInt::zero() && i < l {
+    if i >= l {
+        None
+    } else if i >= BigInt::zero() && i < l {
         Some(&a[i.to_usize().unwrap()])
     } else if i >= -l.clone() {
         Some(&a[(i + l).to_usize().unwrap()])

@@ -1,4 +1,5 @@
 use nom::branch::alt;
+use nom::bytes::complete::take;
 use nom::bytes::complete::{take_while, take_while1, take_while_m_n};
 use nom::character::{is_alphabetic, is_digit};
 use nom::combinator::{consumed, recognize};
@@ -44,8 +45,8 @@ fn parse_identifier(i: &[u8]) -> IResult<&[u8], Gtoken> {
 
 fn parse_string(delimiter: u8, i: &[u8]) -> IResult<&[u8], &[u8]> {
     let inner = alt((
+        recognize(pair(single(b'\\'), take(1usize))),
         take_while_m_n(1, 1, |c| c != delimiter),
-        recognize(pair(single(b'\\'), single(delimiter))),
     ));
     recognize(delimited(
         single(delimiter),

@@ -1,3 +1,5 @@
+use crate::coerce::flatten;
+use crate::parse::parse_code;
 use crate::util::chunk;
 use crate::util::every_nth;
 use crate::util::index;
@@ -7,11 +9,13 @@ use crate::value::join;
 use crate::value::split;
 use clap::Parser;
 use num::BigInt;
+use num::Integer;
 use num::One;
 use num::Signed;
 use num::ToPrimitive;
 use num::Zero;
 use std::cmp::Ordering;
+use std::io::Write;
 
 use std::collections::HashMap;
 use std::str;
@@ -30,7 +34,7 @@ struct Gs {
     pub stack: Vec<Gval>,
     vars: HashMap<Vec<u8>, Gval>,
     lb: Vec<usize>,
-    parse_cache: HashMap<Vec<u8>, Vec<Gtoken>>,
+    rng_state: u64,
 }
 
 impl Gs {
@@ -41,11 +45,12 @@ impl Gs {
             stack: vec![],
             vars,
             lb: vec![],
+            rng_state: 123456789u64,
         }
     }
 
     pub fn run(&mut self, code: &[u8]) {
-        let (rest, tokens) = parse::parse_code(code).expect("parse error");
+        let (rest, tokens) = parse_code(code).expect("parse error");
         if rest.len() > 0 {
             panic!("parse error: has remainder")
         }
@@ -73,11 +78,19 @@ impl Gs {
         self.stack.last().expect("stack underflow")
     }
 
+    fn dup(&mut self) {
+        let a = self.pop();
+        self.push(a.clone());
+        self.push(a);
+    }
+
     fn pop(&mut self) -> Gval {
         let mut i = self.lb.len();
-        while i > 0 && self.lb[i - 1] < self.stack.len() {
+        while i > 0 && self.lb[i - 1] >= self.stack.len() {
             i -= 1;
-            self.lb[i] -= 1;
+            if self.lb[i] > 0 {
+                self.lb[i] -= 1;
+            }
         }
         self.stack.pop().expect("stack underflow")
     }
@@ -221,7 +234,7 @@ impl Gs {
         use Gval::*;
         match (a, b) {
             // divide
-            (Int(a), Int(b)) => self.push(Int(a / b)),
+            (Int(a), Int(b)) => self.push(Int(a.div_floor(&b))),
             // split
             (Arr(a), Arr(sep)) => {
                 let s = split(a, sep, false);
@@ -251,8 +264,19 @@ impl Gs {
             }
 
             // unfold
-            (Blk(_), Blk(_)) => {
-                todo!("unfold")
+            (Blk(cond), Blk(step)) => {
+                let mut r = vec![];
+                loop {
+                    self.push(self.top().clone());
+                    self.run(&cond);
+                    if self.pop().falsey() {
+                        break;
+                    }
+                    r.push(self.top().clone());
+                    self.run(&step);
+                }
+                self.pop();
+                self.push(Gval::Arr(r));
             }
 
             (Blk(_), Int(_)) | (Int(_), Blk(_)) => {
@@ -267,7 +291,7 @@ impl Gs {
         use Gval::*;
         match (a, b) {
             // modulo
-            (Int(a), Int(b)) => self.push(Int(a % b)),
+            (Int(a), Int(b)) => self.push(Int(a.mod_floor(&b))),
             // clean split
             (Arr(a), Arr(sep)) => {
                 let s = split(a, sep, true);
@@ -285,11 +309,11 @@ impl Gs {
             // map
             (Arr(a), Blk(code)) | (Blk(code), Arr(a)) => {
                 let r = self.gs_map(code, a);
-                self.push(r)
+                self.push(Arr(r))
             }
             (Str(a), Blk(code)) | (Blk(code), Str(a)) => {
                 let r = self.gs_map(code, a);
-                self.push(Str(r.to_gs()));
+                self.push(Str(flatten(r)))
             }
 
             // every nth
@@ -466,6 +490,82 @@ impl Gs {
         }
     }
 
+    fn rng(&mut self) -> u64 {
+        let (m, _) = self.rng_state.overflowing_mul(1664525);
+        let (m, _) = m.overflowing_add(1013904223);
+        self.rng_state = m;
+        self.rng_state
+    }
+
+    fn rand(&mut self) {
+        let r = match self.pop() {
+            Gval::Int(n) if n.is_positive() => self.rng() % n,
+            _ => BigInt::zero(),
+        };
+        self.push(Gval::Int(r));
+    }
+
+    fn do_loop(&mut self) {
+        let a = self.pop();
+        loop {
+            self.go(a.clone());
+            if self.pop().falsey() {
+                break;
+            }
+        }
+    }
+
+    fn while_loop(&mut self, which: bool) {
+        let b = self.pop();
+        let a = self.pop();
+        loop {
+            self.go(a.clone());
+            if self.pop().falsey() == which {
+                break;
+            }
+            self.go(b.clone());
+        }
+    }
+
+    fn zip(&mut self) {
+        let a = self.pop().unwrap_arr();
+        let mut r = vec![];
+        let blank = a.first().map_or(Gval::Arr(vec![]), |x| x.factory());
+        for row in a {
+            for (y, elem) in row.as_arr().into_iter().enumerate() {
+                while r.len() < y + 1 {
+                    r.push(blank.clone())
+                }
+                r[y].push(elem.clone());
+            }
+        }
+        self.push(Gval::Arr(r))
+    }
+
+    fn base(&mut self) {
+        let b = self.pop().unwrap_int();
+        match self.pop() {
+            Gval::Int(n) => {
+                let mut digits = vec![];
+                let mut i = n.abs();
+                while !i.is_zero() {
+                    let (j, k) = i.div_mod_floor(&b);
+                    i = j;
+                    digits.push(Gval::Int(k));
+                }
+                digits.reverse();
+                self.push(Gval::Arr(digits))
+            }
+            n => {
+                let mut total = BigInt::zero();
+                for digit in n.as_arr() {
+                    total = total * b.clone() + digit.unwrap_int();
+                }
+                self.push(Gval::Int(total))
+            }
+        }
+    }
+
     fn fold<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) {
         for (i, v) in vs.into_iter().enumerate() {
             self.push(v.into());
@@ -482,7 +582,7 @@ impl Gs {
         }
     }
 
-    fn gs_map<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) -> Gval {
+    fn gs_map<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) -> Vec<Gval> {
         let mut r: Vec<Gval> = vec![];
         for v in vs {
             let lb = self.stack.len();
@@ -490,7 +590,7 @@ impl Gs {
             self.run(&code);
             r.extend(self.stack.drain(lb..));
         }
-        Gval::Arr(r)
+        r
     }
 
     fn select<T: Clone + Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) -> Vec<T> {
@@ -524,11 +624,9 @@ impl Gs {
     }
 
     fn run_builtin(&mut self, token: Gtoken) {
-        if matches!(token, Gtoken::Symbol(_)) {
-            if let Some(v) = self.vars.get(token.lexeme()) {
-                let w = v.clone();
-                self.go(w);
-            }
+        if let Some(v) = self.vars.get(token.lexeme()).cloned() {
+            self.go(v);
+            return;
         }
         match token {
             Gtoken::IntLiteral(bs) => {
@@ -536,8 +634,32 @@ impl Gs {
                 self.push(Gval::Int(n));
             }
             Gtoken::SingleQuotedString(bs) | Gtoken::DoubleQuotedString(bs) => {
-                // TODO: string escapes
-                self.push(Gval::Str(bs[1..bs.len() - 1].to_owned()))
+                let mut bytes = vec![];
+                let mut escaping = false;
+                let single = matches!(token, Gtoken::SingleQuotedString(_));
+                for i in 1..bs.len() - 1 {
+                    if escaping {
+                        if single {
+                            if bs[i] != b'\\' && bs[i] != b'\'' {
+                                bytes.push(b'\\');
+                            }
+                            bytes.push(bs[i]);
+                        } else {
+                            bytes.push(match bs[i] {
+                                b'r' => b'\r',
+                                b'n' => b'\n',
+                                b't' => b'\t',
+                                b => b,
+                            });
+                        }
+                        escaping = false;
+                    } else if bs[i] == b'\\' {
+                        escaping = true;
+                    } else {
+                        bytes.push(bs[i]);
+                    }
+                }
+                self.push(Gval::Str(bytes))
             }
             Gtoken::Symbol(b"~") => self.tilde(),
             Gtoken::Symbol(b"`") => self.backtick(),
@@ -570,18 +692,62 @@ impl Gs {
             Gtoken::Symbol(b"=") => self.lteqgt(Ordering::Equal),
             Gtoken::Symbol(b">") => self.lteqgt(Ordering::Greater),
             Gtoken::Symbol(b",") => self.comma(),
-            Gtoken::Symbol(b".") => self.push(self.top().clone()),
+            Gtoken::Symbol(b".") => self.dup(),
             Gtoken::Symbol(b"?") => self.question(),
             Gtoken::Symbol(b"(") => self.left_paren(),
             Gtoken::Symbol(b")") => self.right_paren(),
+            Gtoken::Symbol(b"and") => {
+                let b = self.pop();
+                let a = self.pop();
+                self.go(if !a.falsey() { b } else { a });
+            }
             Gtoken::Symbol(b"or") => {
                 let b = self.pop();
                 let a = self.pop();
-                self.push(if a.falsey() { b } else { a });
+                self.go(if a.falsey() { b } else { a });
             }
+            Gtoken::Symbol(b"xor") => {
+                let b = self.pop();
+                let a = self.pop();
+                self.push(Gval::bool(a.falsey() ^ b.falsey()));
+            }
+            Gtoken::Symbol(b"print") => {
+                let a = self.pop();
+                std::io::stdout().write(&a.to_gs()).unwrap();
+            }
+            Gtoken::Symbol(b"p") => {
+                let a = self.pop();
+                std::io::stdout().write(&a.inspect()).unwrap();
+                std::io::stdout().write(b"\n").unwrap();
+            }
+            Gtoken::Symbol(b"puts") => {
+                let a = self.pop();
+                std::io::stdout().write(&a.to_gs()).unwrap();
+                std::io::stdout().write(b"\n").unwrap();
+            }
+            Gtoken::Symbol(b"rand") => self.rand(),
+            Gtoken::Symbol(b"do") => self.do_loop(),
+            Gtoken::Symbol(b"while") => self.while_loop(true),
+            Gtoken::Symbol(b"until") => self.while_loop(false),
+            Gtoken::Symbol(b"if") => {
+                let c = self.pop();
+                let b = self.pop();
+                let a = self.pop();
+                if !a.falsey() {
+                    self.go(b);
+                } else {
+                    self.go(c);
+                }
+            }
+            Gtoken::Symbol(b"abs") => {
+                let a = self.pop();
+                self.push(Gval::Int(a.unwrap_int().abs()));
+            }
+            Gtoken::Symbol(b"zip") => self.zip(),
+            Gtoken::Symbol(b"base") => self.base(),
             Gtoken::Block(_, src) => self.push(Gval::Blk(src.to_owned())),
             Gtoken::Symbol(_) => {}
-            t => todo!("builtin {}", str::from_utf8(t.lexeme()).unwrap()),
+            Gtoken::Comment(_) => {}
         }
     }
 }
@@ -589,15 +755,16 @@ impl Gs {
 #[derive(clap::Parser, Debug)]
 struct Cli {
     code: String,
+    input: String,
 }
 
 fn main() {
     let p = Cli::parse();
     let mut gs = Gs::new();
+    gs.stack.push(Gval::Str(p.input.as_bytes().to_vec()));
     gs.run(p.code.as_bytes());
     // for g in gs.stack {
     //     print!("{} ", str::from_utf8(&g.inspect()).unwrap());
     // }
     println!("{}", str::from_utf8(&Gval::Arr(gs.stack).to_gs()).unwrap());
-    println!();
 }
