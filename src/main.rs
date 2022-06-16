@@ -1,230 +1,55 @@
+use crate::util::chunk;
+use crate::util::every_nth;
+use crate::util::index;
+use crate::util::slice;
+use crate::util::string_index;
+use crate::value::join;
+use crate::value::split;
 use clap::Parser;
-use nom::{
-    bytes::complete::{tag, take_while_m_n},
-    combinator::map_res,
-    sequence::tuple,
-    IResult,
-};
-use num::bigint::Sign;
 use num::BigInt;
-use num::FromPrimitive;
-use num::Integer;
 use num::One;
 use num::Signed;
 use num::ToPrimitive;
 use num::Zero;
+use std::cmp::Ordering;
 
 use std::collections::HashMap;
 use std::str;
 
+mod coerce;
 mod parse;
-use parse::Gtoken;
+mod util;
+mod value;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Gval {
-    Int(BigInt),
-    Arr(Vec<Gval>),
-    Str(Vec<u8>),
-    Blk(Vec<u8>),
-}
-
-impl From<u8> for Gval {
-    fn from(byte: u8) -> Self {
-        Gval::Int(byte.into())
-    }
-}
-
-fn join(a: Vec<Gval>, sep: Gval) -> Gval {
-    let mut a = a.into_iter();
-    match a.next() {
-        None => match sep {
-            Gval::Arr(_) => Gval::Arr(vec![]),
-            _ => Gval::Str(vec![]),
-        },
-        Some(mut r) => {
-            for i in a {
-                r = r.plus(sep.clone()).plus(i);
-            }
-            r
-        }
-    }
-}
-
-fn repeat<T: Clone>(a: Vec<T>, mut n: BigInt) -> Vec<T> {
-    let mut v = vec![];
-    while n.is_positive() {
-        v.extend(a.clone());
-        n -= 1;
-    }
-    v
-}
-
-fn set_subtract<T: Eq>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
-    a.into_iter().filter(|x| !b.contains(&x)).collect()
-}
-
-impl Gval {
-    fn falsey(self) -> bool {
-        match self {
-            Gval::Int(a) => a == BigInt::zero(),
-            Gval::Arr(vs) => vs.len() == 0,
-            Gval::Str(bs) | Gval::Blk(bs) => bs.len() == 0,
-        }
-    }
-    fn to_gs(self) -> Vec<u8> {
-        match self {
-            Gval::Int(a) => a.to_str_radix(10).into_bytes(),
-            Gval::Arr(vs) => {
-                let mut bytes: Vec<u8> = vec![];
-                for v in vs {
-                    bytes.extend(v.to_gs());
-                }
-                bytes
-            }
-            Gval::Str(bs) => bs,
-            Gval::Blk(bs) => {
-                let mut bytes: Vec<u8> = vec!['{' as u8];
-                bytes.extend(bs);
-                bytes.push('}' as u8);
-                bytes
-            }
-        }
-    }
-
-    fn inspect(self) -> Vec<u8> {
-        match self {
-            Gval::Arr(vs) => {
-                let mut bytes: Vec<u8> = vec![];
-                for v in vs {
-                    bytes.push(b' ');
-                    bytes.extend(v.inspect());
-                }
-                bytes[0] = b'[';
-                bytes.push(b']');
-                bytes
-            }
-            Gval::Str(bs) => {
-                let mut bytes: Vec<u8> = vec![b'"'];
-                for b in bs {
-                    if b == b'\'' {
-                        bytes.push(b)
-                    } else {
-                        bytes.extend(std::ascii::escape_default(b))
-                    }
-                }
-                bytes.push(b'"');
-                bytes
-            }
-            _ => self.to_gs(),
-        }
-    }
-
-    fn plus(self, other: Gval) -> Gval {
-        match coerce(self, other) {
-            Gco::Ints(x, y) => Gval::Int(x + y),
-            Gco::Arrs(mut x, y) => {
-                x.extend(y);
-                Gval::Arr(x)
-            }
-            Gco::Strs(mut x, y) => {
-                x.extend(y);
-                Gval::Str(x)
-            }
-            Gco::Blks(x, y) => {
-                let mut joined = x.clone();
-                joined.push(b' ');
-                joined.extend(y);
-                Gval::Blk(joined)
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Gco {
-    Ints(BigInt, BigInt),
-    Arrs(Vec<Gval>, Vec<Gval>),
-    Strs(Vec<u8>, Vec<u8>),
-    Blks(Vec<u8>, Vec<u8>),
-}
-
-fn flatten_append(bytes: &mut Vec<u8>, val: Gval) {
-    match val {
-        Gval::Int(a) => bytes.push(a.mod_floor(&256.into()).to_u8().unwrap()),
-        Gval::Arr(vs) => {
-            for v in vs {
-                flatten_append(bytes, v);
-            }
-        }
-        Gval::Str(bs) | Gval::Blk(bs) => bytes.extend(bs),
-    }
-}
-
-fn flatten(arr: Vec<Gval>) -> Vec<u8> {
-    let mut bytes: Vec<u8> = vec![];
-    flatten_append(&mut bytes, Gval::Arr(arr));
-    bytes
-}
-
-fn show_words(arr: Vec<Gval>) -> Vec<u8> {
-    let mut bytes: Vec<u8> = vec![];
-    for (i, v) in arr.into_iter().enumerate() {
-        if i > 0 {
-            bytes.push(' ' as u8)
-        }
-        bytes.extend(v.to_gs())
-    }
-    bytes
-}
-
-fn coerce(a: Gval, b: Gval) -> Gco {
-    use Gval::*;
-    match (a, b) {
-        // same type (or str + blk):
-        (Int(a), Int(b)) => Gco::Ints(a, b),
-        (Arr(a), Arr(b)) => Gco::Arrs(a, b),
-        (Str(a), Str(b)) => Gco::Strs(a, b),
-        (Blk(a), Blk(b)) => Gco::Blks(a, b),
-        (Str(a), Blk(b)) => Gco::Blks(a, b),
-        (Blk(a), Str(b)) => Gco::Blks(a, b),
-        // int + arr: wrap the int
-        (Int(a), Arr(b)) => Gco::Arrs(vec![Int(a)], b),
-        (Arr(a), Int(b)) => Gco::Arrs(a, vec![Int(b)]),
-        // int + str/blk: show the int
-        (Int(a), Str(b)) => Gco::Strs(a.to_str_radix(10).into_bytes(), b),
-        (Str(a), Int(b)) => Gco::Strs(a, b.to_str_radix(10).into_bytes()),
-        (Int(a), Blk(b)) => Gco::Blks(a.to_str_radix(10).into_bytes(), b),
-        (Blk(a), Int(b)) => Gco::Blks(a, b.to_str_radix(10).into_bytes()),
-        // str + arr: flatten the arr
-        (Arr(a), Str(b)) => Gco::Strs(flatten(a), b),
-        (Str(a), Arr(b)) => Gco::Strs(a, flatten(b)),
-        // arr + blk: show arr contents space-separated
-        (Arr(a), Blk(b)) => Gco::Blks(show_words(a), b),
-        (Blk(a), Arr(b)) => Gco::Blks(a, show_words(b)),
-    }
-}
+use crate::coerce::{coerce, Coerced};
+use crate::parse::Gtoken;
+use crate::util::{repeat, set_and, set_or, set_subtract, set_xor};
+use crate::value::Gval;
 
 struct Gs {
     pub stack: Vec<Gval>,
     vars: HashMap<Vec<u8>, Gval>,
     lb: Vec<usize>,
+    parse_cache: HashMap<Vec<u8>, Vec<Gtoken>>,
 }
 
 impl Gs {
     pub fn new() -> Gs {
+        let mut vars = HashMap::new();
+        vars.insert(b"n".to_vec(), Gval::Str(b"\n".to_vec()));
         Gs {
             stack: vec![],
-            vars: HashMap::new(),
+            vars,
             lb: vec![],
         }
     }
 
     pub fn run(&mut self, code: &[u8]) {
         let (rest, tokens) = parse::parse_code(code).expect("parse error");
-        if rest != [] {
-            panic!("parse error")
+        if rest.len() > 0 {
+            panic!("parse error: has remainder")
         }
-        println!("parse: {:?}", tokens);
+        // println!("parse: {:?}", tokens);
         let mut tokens = tokens.into_iter();
         while let Some(token) = tokens.next() {
             match token {
@@ -244,7 +69,7 @@ impl Gs {
         self.stack.push(val)
     }
 
-    fn top(&mut self) -> &Gval {
+    fn top(&self) -> &Gval {
         self.stack.last().expect("stack underflow")
     }
 
@@ -348,10 +173,10 @@ impl Gs {
         let b = self.pop();
         let a = self.pop();
         match coerce(a, b) {
-            Gco::Ints(x, y) => self.push(Gval::Int(x - y)),
-            Gco::Arrs(x, y) => self.push(Gval::Arr(set_subtract(x, y))),
-            Gco::Strs(x, y) => self.push(Gval::Str(set_subtract(x, y))),
-            Gco::Blks(x, y) => self.push(Gval::Blk(set_subtract(x, y))),
+            Coerced::Ints(x, y) => self.push(Gval::Int(x - y)),
+            Coerced::Arrs(x, y) => self.push(Gval::Arr(set_subtract(x, y))),
+            Coerced::Strs(x, y) => self.push(Gval::Str(set_subtract(x, y))),
+            Coerced::Blks(x, y) => self.push(Gval::Blk(set_subtract(x, y))),
         }
     }
 
@@ -390,11 +215,303 @@ impl Gs {
         }
     }
 
+    fn slash(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        use Gval::*;
+        match (a, b) {
+            // divide
+            (Int(a), Int(b)) => self.push(Int(a / b)),
+            // split
+            (Arr(a), Arr(sep)) => {
+                let s = split(a, sep, false);
+                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+            }
+            (Str(a), Str(sep)) => {
+                let s = split(a, sep, false);
+                self.push(Arr(s.into_iter().map(|x| Str(x)).collect()));
+            }
+            (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => {
+                let s = split(a, sep.into_iter().map(|x| x.into()).collect(), false);
+                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+            }
+
+            // each
+            (Str(a), Blk(code)) | (Blk(code), Str(a)) => self.each(code, a),
+            (Arr(a), Blk(code)) | (Blk(code), Arr(a)) => self.each(code, a),
+
+            // chunk
+            (Int(n), Arr(mut a)) | (Arr(mut a), Int(n)) => {
+                let c = chunk(&mut a, n);
+                self.push(Arr(c.into_iter().map(|x| Arr(x.to_owned())).collect()));
+            }
+            (Int(n), Str(mut a)) | (Str(mut a), Int(n)) => {
+                let c = chunk(&mut a, n);
+                self.push(Arr(c.into_iter().map(|x| Str(x.to_owned())).collect()));
+            }
+
+            // unfold
+            (Blk(_), Blk(_)) => {
+                todo!("unfold")
+            }
+
+            (Blk(_), Int(_)) | (Int(_), Blk(_)) => {
+                panic!("int-block /")
+            }
+        }
+    }
+
+    fn percent(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        use Gval::*;
+        match (a, b) {
+            // modulo
+            (Int(a), Int(b)) => self.push(Int(a % b)),
+            // clean split
+            (Arr(a), Arr(sep)) => {
+                let s = split(a, sep, true);
+                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+            }
+            (Str(a), Str(sep)) => {
+                let s = split(a, sep, true);
+                self.push(Arr(s.into_iter().map(|x| Str(x)).collect()));
+            }
+            (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => {
+                let s = split(a, sep.into_iter().map(|x| x.into()).collect(), true);
+                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+            }
+
+            // map
+            (Arr(a), Blk(code)) | (Blk(code), Arr(a)) => {
+                let r = self.gs_map(code, a);
+                self.push(r)
+            }
+            (Str(a), Blk(code)) | (Blk(code), Str(a)) => {
+                let r = self.gs_map(code, a);
+                self.push(Str(r.to_gs()));
+            }
+
+            // every nth
+            (Int(n), Arr(a)) | (Arr(a), Int(n)) => self.push(Arr(every_nth(a, n))),
+            (Int(n), Str(a)) | (Str(a), Int(n)) => self.push(Str(every_nth(a, n))),
+
+            // unimplemented
+            (Int(_), Blk(_)) | (Blk(_), Int(_)) | (Blk(_), Blk(_)) => panic!("%"),
+        }
+    }
+
+    fn vertical_bar(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        self.push(match coerce(a, b) {
+            Coerced::Ints(x, y) => Gval::Int(x | y),
+            Coerced::Arrs(x, y) => Gval::Arr(set_or(x, y)),
+            Coerced::Strs(x, y) => Gval::Str(set_or(x, y)),
+            Coerced::Blks(x, y) => Gval::Blk(set_or(x, y)),
+        })
+    }
+
+    fn ampersand(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        self.push(match coerce(a, b) {
+            Coerced::Ints(x, y) => Gval::Int(x & y),
+            Coerced::Arrs(x, y) => Gval::Arr(set_and(x, y)),
+            Coerced::Strs(x, y) => Gval::Str(set_and(x, y)),
+            Coerced::Blks(x, y) => Gval::Blk(set_and(x, y)),
+        })
+    }
+
+    fn caret(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        self.push(match coerce(a, b) {
+            Coerced::Ints(x, y) => Gval::Int(x ^ y),
+            Coerced::Arrs(x, y) => Gval::Arr(set_xor(x, y)),
+            Coerced::Strs(x, y) => Gval::Str(set_xor(x, y)),
+            Coerced::Blks(x, y) => Gval::Blk(set_xor(x, y)),
+        })
+    }
+
+    fn lteqgt(&mut self, ordering: Ordering) {
+        let b = self.pop();
+        let a = self.pop();
+        use Gval::*;
+        use Ordering::*;
+        match (ordering, a, b) {
+            (Equal, Int(i), Arr(a)) | (Equal, Arr(a), Int(i)) => {
+                index(&a, i).map(|x| self.push(x.clone()));
+            }
+            (Equal, Int(i), Str(a))
+            | (Equal, Str(a), Int(i))
+            | (Equal, Int(i), Blk(a))
+            | (Equal, Blk(a), Int(i)) => {
+                index(&a, i).map(|x| self.push(x.clone().into()));
+            }
+            (o, Int(i), Arr(a)) | (o, Arr(a), Int(i)) => self.push(Arr(slice(o, a, i))),
+            (o, Int(i), Str(a)) | (o, Str(a), Int(i)) => self.push(Str(slice(o, a, i))),
+            (o, Int(i), Blk(a)) | (o, Blk(a), Int(i)) => self.push(Blk(slice(o, a, i))),
+            (o, x, y) => self.push(Gval::bool(x.cmp(&y) == o)),
+        }
+    }
+
+    fn comma(&mut self) {
+        use Gval::*;
+        match self.pop() {
+            Int(n) => {
+                let mut r = vec![];
+                let mut i = BigInt::zero();
+                while i < n {
+                    r.push(Int(i.clone()));
+                    i += 1i32;
+                }
+                self.push(Arr(r));
+            }
+            Arr(a) => self.push(a.len().into()),
+            Str(a) => self.push(a.len().into()),
+            Blk(code) => match self.pop() {
+                Int(_) => panic!("select on integer"),
+                Arr(a) => {
+                    let r = self.select(code, a);
+                    self.push(Arr(r))
+                }
+                Str(a) => {
+                    let r = self.select(code, a);
+                    self.push(Str(r))
+                }
+                Blk(a) => {
+                    let r = self.select(code, a);
+                    self.push(Blk(r))
+                }
+            },
+        }
+    }
+
+    fn question(&mut self) {
+        let b = self.pop();
+        let a = self.pop();
+        use Gval::*;
+        match (a, b) {
+            // power
+            (Int(a), Int(b)) => self.push(Int(match b.to_u32() {
+                Some(e) => a.pow(e),
+                None => BigInt::zero(),
+            })),
+
+            // indexof
+            (Arr(h), n @ Int(_))
+            | (n @ Int(_), Arr(h))
+            | (Arr(h), n @ Str(_))
+            | (n @ Str(_), Arr(h))
+            | (Arr(h), n @ Arr(_)) => self.push(Gval::Int(
+                h.iter()
+                    .position(|x| *x == n)
+                    .map_or(-BigInt::one(), BigInt::from),
+            )),
+            (Str(h), Int(n)) | (Int(n), Str(h)) => self.push(Gval::Int(match n.to_u8() {
+                None => -BigInt::one(),
+                Some(b) => h
+                    .iter()
+                    .position(|x| *x == b)
+                    .map_or(-BigInt::one(), BigInt::from),
+            })),
+            (Str(h), Str(n)) => self.push(Gval::Int(string_index(&h, &n))),
+
+            // find
+            (Int(_), Blk(_)) | (Blk(_), Int(_)) => panic!(),
+            (Blk(code), Blk(a)) | (Blk(code), Str(a)) | (Str(a), Blk(code)) => self.find(code, a),
+            (Blk(code), Arr(a)) | (Arr(a), Blk(code)) => self.find(code, a),
+        }
+    }
+
+    fn left_paren(&mut self) {
+        use Gval::*;
+        match self.pop() {
+            Int(n) => self.push(Int(n - 1i32)),
+            Arr(a) => {
+                self.push(Arr(a[1..].to_vec()));
+                self.push(a[0].clone());
+            }
+            Str(a) => {
+                self.push(Str(a[1..].to_vec()));
+                self.push(a[0].into());
+            }
+            Blk(a) => {
+                self.push(Blk(a[1..].to_vec()));
+                self.push(a[0].into());
+            }
+        }
+    }
+
+    fn right_paren(&mut self) {
+        use Gval::*;
+        match self.pop() {
+            Int(n) => self.push(Int(n + 1i32)),
+            Arr(mut a) => {
+                let l = a.pop().unwrap();
+                self.push(Arr(a.to_vec()));
+                self.push(l);
+            }
+            Str(mut a) => {
+                let l = a.pop().unwrap();
+                self.push(Str(a.to_vec()));
+                self.push(l.into());
+            }
+            Blk(mut a) => {
+                let l = a.pop().unwrap();
+                self.push(Blk(a.to_vec()));
+                self.push(l.into());
+            }
+        }
+    }
+
     fn fold<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) {
         for (i, v) in vs.into_iter().enumerate() {
             self.push(v.into());
             if i >= 1 {
                 self.run(&code);
+            }
+        }
+    }
+
+    fn each<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) {
+        for v in vs {
+            self.push(v.into());
+            self.run(&code);
+        }
+    }
+
+    fn gs_map<T: Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) -> Gval {
+        let mut r: Vec<Gval> = vec![];
+        for v in vs {
+            let lb = self.stack.len();
+            self.push(v.into());
+            self.run(&code);
+            r.extend(self.stack.drain(lb..));
+        }
+        Gval::Arr(r)
+    }
+
+    fn select<T: Clone + Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) -> Vec<T> {
+        let mut r: Vec<T> = vec![];
+        for v in vs {
+            self.push(v.clone().into());
+            self.run(&code);
+            if !self.pop().falsey() {
+                r.push(v)
+            }
+        }
+        r
+    }
+
+    fn find<T: Clone + Into<Gval>>(&mut self, code: Vec<u8>, vs: Vec<T>) {
+        for v in vs {
+            self.push(v.clone().into());
+            self.run(&code);
+            if !self.pop().falsey() {
+                self.push(v.into());
+                break;
             }
         }
     }
@@ -407,7 +524,7 @@ impl Gs {
     }
 
     fn run_builtin(&mut self, token: Gtoken) {
-        if matches!(token, Gtoken::Symbol(s)) {
+        if matches!(token, Gtoken::Symbol(_)) {
             if let Some(v) = self.vars.get(token.lexeme()) {
                 let w = v.clone();
                 self.go(w);
@@ -430,6 +547,38 @@ impl Gs {
             Gtoken::Symbol(b"+") => self.plus(),
             Gtoken::Symbol(b"-") => self.minus(),
             Gtoken::Symbol(b"*") => self.asterisk(),
+            Gtoken::Symbol(b"/") => self.slash(),
+            Gtoken::Symbol(b"%") => self.percent(),
+            Gtoken::Symbol(b"|") => self.vertical_bar(),
+            Gtoken::Symbol(b"&") => self.ampersand(),
+            Gtoken::Symbol(b"^") => self.caret(),
+            Gtoken::Symbol(b"[") => self.lb.push(self.stack.len()),
+            Gtoken::Symbol(b"]") => {
+                let vs = self.stack.drain(self.lb.pop().unwrap_or(0)..).collect();
+                self.push(Gval::Arr(vs));
+            }
+            Gtoken::Symbol(b"\\") => {
+                let b = self.pop();
+                let a = self.pop();
+                self.push(b);
+                self.push(a);
+            }
+            Gtoken::Symbol(b";") => {
+                let _ = self.pop();
+            }
+            Gtoken::Symbol(b"<") => self.lteqgt(Ordering::Less),
+            Gtoken::Symbol(b"=") => self.lteqgt(Ordering::Equal),
+            Gtoken::Symbol(b">") => self.lteqgt(Ordering::Greater),
+            Gtoken::Symbol(b",") => self.comma(),
+            Gtoken::Symbol(b".") => self.push(self.top().clone()),
+            Gtoken::Symbol(b"?") => self.question(),
+            Gtoken::Symbol(b"(") => self.left_paren(),
+            Gtoken::Symbol(b")") => self.right_paren(),
+            Gtoken::Symbol(b"or") => {
+                let b = self.pop();
+                let a = self.pop();
+                self.push(if a.falsey() { b } else { a });
+            }
             Gtoken::Block(_, src) => self.push(Gval::Blk(src.to_owned())),
             Gtoken::Symbol(_) => {}
             t => todo!("builtin {}", str::from_utf8(t.lexeme()).unwrap()),
@@ -446,8 +595,9 @@ fn main() {
     let p = Cli::parse();
     let mut gs = Gs::new();
     gs.run(p.code.as_bytes());
-    for g in gs.stack {
-        print!("{} ", str::from_utf8(&g.inspect()).unwrap());
-    }
+    // for g in gs.stack {
+    //     print!("{} ", str::from_utf8(&g.inspect()).unwrap());
+    // }
+    println!("{}", str::from_utf8(&Gval::Arr(gs.stack).to_gs()).unwrap());
     println!();
 }

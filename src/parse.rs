@@ -1,13 +1,12 @@
 use nom::branch::alt;
-use nom::bytes::complete::{escaped, tag, take_while, take_while1, take_while_m_n};
-use nom::character::complete::{none_of, one_of, satisfy};
+use nom::bytes::complete::{take_while, take_while1, take_while_m_n};
 use nom::character::{is_alphabetic, is_digit};
-use nom::combinator::{consumed, map, recognize};
-use nom::multi::{many0, many1};
+use nom::combinator::{consumed, recognize};
+use nom::multi::many0;
 use nom::sequence::{delimited, pair};
 use nom::IResult;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Gtoken<'a> {
     Symbol(&'a [u8]),             // [a-zA-Z_][a-zA-Z0-9_]* or final .
     SingleQuotedString(&'a [u8]), // '(?:\\.|[^'])*'?
