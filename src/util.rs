@@ -21,8 +21,8 @@ pub fn repeat<T: Clone>(a: Vec<T>, mut n: BigInt) -> Vec<T> {
     v
 }
 
-pub fn chunk<'a, T: Clone>(a: &'a mut Vec<T>, n: BigInt) -> Vec<&'a [T]> {
-    if a.len() == 0 {
+pub fn chunk<T: Clone>(a: &mut Vec<T>, n: BigInt) -> Vec<&[T]> {
+    if a.is_empty() {
         return vec![];
     }
     if n.is_zero() {
@@ -41,7 +41,7 @@ pub fn split<T: Clone + Eq>(a: Vec<T>, sep: Vec<T>, clean: bool) -> Vec<Vec<T>> 
 
     while j < a.len() {
         if j + sep.len() <= a.len() && a[j..j + sep.len()].iter().eq(sep.iter()) {
-            if !clean || i.len() > 0 {
+            if !clean || !i.is_empty() {
                 r.push(i);
             }
             i = vec![];
@@ -51,7 +51,7 @@ pub fn split<T: Clone + Eq>(a: Vec<T>, sep: Vec<T>, clean: bool) -> Vec<Vec<T>> 
             j += 1;
         }
     }
-    if !clean || i.len() > 0 {
+    if !clean || !i.is_empty() {
         r.push(i);
     }
     r
@@ -67,7 +67,7 @@ pub fn every_nth<T>(a: Vec<T>, n: BigInt) -> Vec<T> {
 }
 
 pub fn set_subtract<T: Eq>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
-    a.into_iter().filter(|x| !b.contains(&x)).collect()
+    a.into_iter().filter(|x| !b.contains(x)).collect()
 }
 
 pub fn set_or<T: Clone + Eq + Hash>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
@@ -158,5 +158,5 @@ pub fn string_index(haystack: &[u8], needle: &[u8]) -> BigInt {
             }
         }
     }
-    return -BigInt::one();
+    -BigInt::one()
 }

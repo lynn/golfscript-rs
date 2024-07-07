@@ -1,15 +1,15 @@
 pub fn unescape(lexeme: &[u8], single_quoted: bool) -> Vec<u8> {
     let mut bytes = vec![];
     let mut escaping = false;
-    for i in 1..lexeme.len() - 1 {
+    for &b in lexeme.iter().take(lexeme.len() - 1).skip(1) {
         if escaping {
             if single_quoted {
-                if lexeme[i] != b'\\' && lexeme[i] != b'\'' {
+                if b != b'\\' && b != b'\'' {
                     bytes.push(b'\\');
                 }
-                bytes.push(lexeme[i]);
+                bytes.push(b);
             } else {
-                bytes.push(match lexeme[i] {
+                bytes.push(match b {
                     b'a' => b'\x07',
                     b'b' => b'\x08',
                     b't' => b'\t',
@@ -23,10 +23,10 @@ pub fn unescape(lexeme: &[u8], single_quoted: bool) -> Vec<u8> {
                 });
             }
             escaping = false;
-        } else if lexeme[i] == b'\\' {
+        } else if b == b'\\' {
             escaping = true;
         } else {
-            bytes.push(lexeme[i]);
+            bytes.push(b);
         }
     }
     bytes

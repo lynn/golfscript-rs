@@ -55,7 +55,7 @@ impl Gs {
 
     pub fn run(&mut self, code: &[u8]) {
         let (rest, tokens) = parse_code(code).expect("parse error");
-        if rest.len() > 0 {
+        if !rest.is_empty() {
             panic!("parse error: has remainder")
         }
         // println!("parse: {:?}", tokens);
@@ -208,7 +208,7 @@ impl Gs {
             (Arr(a), Arr(sep)) => self.push(join(a, Arr(sep))),
             (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => self.push(join(a, Str(sep))),
             (Str(a), Str(sep)) => {
-                let a: Vec<Gval> = a.into_iter().map(|x| Gval::Str(vec![x.into()])).collect();
+                let a: Vec<Gval> = a.into_iter().map(|x| Gval::Str(vec![x])).collect();
                 self.push(join(a, Str(sep)));
             }
 
@@ -240,15 +240,15 @@ impl Gs {
             // split
             (Arr(a), Arr(sep)) => {
                 let s = split(a, sep, false);
-                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+                self.push(Arr(s.into_iter().map(Arr).collect()));
             }
             (Str(a), Str(sep)) => {
                 let s = split(a, sep, false);
-                self.push(Arr(s.into_iter().map(|x| Str(x)).collect()));
+                self.push(Arr(s.into_iter().map(Str).collect()));
             }
             (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => {
                 let s = split(a, sep.into_iter().map(|x| x.into()).collect(), false);
-                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+                self.push(Arr(s.into_iter().map(Arr).collect()));
             }
 
             // each
@@ -297,15 +297,15 @@ impl Gs {
             // clean split
             (Arr(a), Arr(sep)) => {
                 let s = split(a, sep, true);
-                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+                self.push(Arr(s.into_iter().map(Arr).collect()));
             }
             (Str(a), Str(sep)) => {
                 let s = split(a, sep, true);
-                self.push(Arr(s.into_iter().map(|x| Str(x)).collect()));
+                self.push(Arr(s.into_iter().map(Str).collect()));
             }
             (Arr(a), Str(sep)) | (Str(sep), Arr(a)) => {
                 let s = split(a, sep.into_iter().map(|x| x.into()).collect(), true);
-                self.push(Arr(s.into_iter().map(|x| Arr(x)).collect()));
+                self.push(Arr(s.into_iter().map(Arr).collect()));
             }
 
             // map
@@ -367,13 +367,17 @@ impl Gs {
         use Ordering::*;
         match (ordering, a, b) {
             (Equal, Int(i), Arr(a)) | (Equal, Arr(a), Int(i)) => {
-                index(&a, i).map(|x| self.push(x.clone()));
+                if let Some(x) = index(&a, i) {
+                    self.push(x.clone())
+                }
             }
             (Equal, Int(i), Str(a))
             | (Equal, Str(a), Int(i))
             | (Equal, Int(i), Blk(a))
             | (Equal, Blk(a), Int(i)) => {
-                index(&a, i).map(|x| self.push(x.clone().into()));
+                if let Some(x) = index(&a, i) {
+                    self.push((*x).into())
+                }
             }
             (o, Int(i), Arr(a)) | (o, Arr(a), Int(i)) => self.push(Arr(slice(o, a, i))),
             (o, Int(i), Str(a)) | (o, Str(a), Int(i)) => self.push(Str(slice(o, a, i))),
@@ -534,7 +538,7 @@ impl Gs {
         let mut r = vec![];
         let blank = a.first().map_or(Gval::Arr(vec![]), |x| x.factory());
         for row in a {
-            for (y, elem) in row.as_arr().into_iter().enumerate() {
+            for (y, elem) in row.into_arr().into_iter().enumerate() {
                 while r.len() < y + 1 {
                     r.push(blank.clone())
                 }
@@ -560,7 +564,7 @@ impl Gs {
             }
             n => {
                 let mut total = BigInt::zero();
-                for digit in n.as_arr() {
+                for digit in n.into_arr() {
                     total = total * b.clone() + digit.unwrap_int();
                 }
                 self.push(Gval::Int(total))
@@ -690,7 +694,7 @@ impl Gs {
             Gtoken::Symbol(b"n") => self.push(Gval::Str(b"\n".to_vec())),
             Gtoken::Symbol(b"print") => {
                 let a = self.pop();
-                print(&a.to_gs());
+                print(&a.into_gs());
             }
             Gtoken::Symbol(b"p") => {
                 let a = self.pop();
@@ -699,7 +703,7 @@ impl Gs {
             }
             Gtoken::Symbol(b"puts") => {
                 let a = self.pop();
-                print(&a.to_gs());
+                print(&a.into_gs());
                 print(b"\n");
             }
             Gtoken::Symbol(b"rand") => self.rand(),

@@ -31,8 +31,8 @@ impl Gval {
     pub fn falsey(&self) -> bool {
         match self {
             Gval::Int(a) => *a == BigInt::zero(),
-            Gval::Arr(vs) => vs.len() == 0,
-            Gval::Str(bs) | Gval::Blk(bs) => bs.len() == 0,
+            Gval::Arr(vs) => vs.is_empty(),
+            Gval::Str(bs) | Gval::Blk(bs) => bs.is_empty(),
         }
     }
 
@@ -40,21 +40,21 @@ impl Gval {
         !self.falsey()
     }
 
-    pub fn to_gs(self) -> Vec<u8> {
+    pub fn into_gs(self) -> Vec<u8> {
         match self {
             Gval::Int(a) => a.to_str_radix(10).into_bytes(),
             Gval::Arr(vs) => {
                 let mut bytes: Vec<u8> = vec![];
                 for v in vs {
-                    bytes.extend(v.to_gs());
+                    bytes.extend(v.into_gs());
                 }
                 bytes
             }
             Gval::Str(bs) => bs,
             Gval::Blk(bs) => {
-                let mut bytes: Vec<u8> = vec!['{' as u8];
+                let mut bytes: Vec<u8> = vec![b'{'];
                 bytes.extend(bs);
-                bytes.push('}' as u8);
+                bytes.push(b'}');
                 bytes
             }
         }
@@ -87,7 +87,7 @@ impl Gval {
                 bytes.push(b'"');
                 bytes
             }
-            _ => self.to_gs(),
+            _ => self.into_gs(),
         }
     }
 
@@ -143,9 +143,9 @@ impl Gval {
         }
     }
 
-    pub fn as_arr(self) -> Vec<Gval> {
+    pub fn into_arr(self) -> Vec<Gval> {
         match self {
-            Gval::Int(_) => panic!("as_arr"),
+            Gval::Int(_) => panic!("into_arr"),
             Gval::Arr(a) => a,
             Gval::Str(a) | Gval::Blk(a) => a.into_iter().map(|b| b.into()).collect(),
         }

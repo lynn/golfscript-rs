@@ -43,9 +43,9 @@ fn show_words(arr: Vec<Gval>) -> Vec<u8> {
     let mut bytes: Vec<u8> = vec![];
     for (i, v) in arr.into_iter().enumerate() {
         if i > 0 {
-            bytes.push(' ' as u8)
+            bytes.push(b' ')
         }
-        bytes.extend(v.to_gs())
+        bytes.extend(v.into_gs())
     }
     bytes
 }
